@@ -31,7 +31,7 @@ from .init import LevelFormatter, cyan
 from .utils import select_target
 from .repl import redisplay
 from .exploits import Environment, make_payload
-from .utils import pause
+from .utils import pause, get_libc_path
 
 
 pat = Pat()
@@ -56,14 +56,17 @@ def start_tutor(course, bits, burst, aslr, level):
         exit(1)
     root = resource_filename(__name__, '')
     target = realpath(join(root, 'targets', bin_name))
+    Environment.LIBC_PATH = get_libc_path(target)
     logging.debug('target: %s', target)
+    logging.debug('libc: %s', Environment.LIBC_PATH)
 
     name = '{}-{}.bin'.format(course, 'x86' if bits == 32 else 'x64')
     name = realpath(name)
     with open(name, 'w') as stream:
         stream.write(pat.create(400))
 
-    offset, addr = get_offset(target, name, bits, burst, course)
+    offset, addr = pattern_locatable(target, name, bits,
+                                     burst, course)
     if offset:
         logging.info('\nFound offset: %s', offset)
         payload = make_payload(offset, addr, course)
@@ -78,12 +81,12 @@ def start_tutor(course, bits, burst, aslr, level):
         logging.info('Payload: %s', payload)
         logging.info('Hexlified: %s', hexlify(payload))
         pause(cyan('Enter to test the payload...'))
-        get_offset(target, name, bits, burst, course)
+        pattern_locatable(target, name, bits, burst, course)
     else:
         logging.error('Offset Not Found')
 
 
-def get_offset(target, name, bits, burst, course):
+def pattern_locatable(target, name, bits, burst, course):
     debugger.start(target, [name])
     last_stack = ''
     while True:
@@ -128,9 +131,15 @@ def get_offset(target, name, bits, burst, course):
             else:
                 pause('Enter to return...')
             return offset, addr
+        # TODO: Remove hardcoded behaviors.
+        def inside_fun(ip, fun):
+            return ('<{}>'.format(fun) in ip or
+                    '(_{})'.format(fun) in ip)
         def is_read_file(ip):
-            return '<read_file>' in ip or '(_read_file)' in ip
-        if 'call' in ip and is_read_file(ip):
+            return inside_fun(ip, 'read_file')
+        def is_off_by_one(ip):
+            return inside_fun(ip, 'off_by_one')
+        if 'call' in ip and (is_read_file(ip) or is_off_by_one(ip)):
             debugger.step()
         elif '<system>' in ip and burst:
             debugger.cont()
